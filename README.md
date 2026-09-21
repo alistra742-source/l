@@ -22,6 +22,10 @@ SOL_RPC_URL
 ETH_OWNER_ADDRESS
 LTC_OWNER_ADDRESS
 SOL_OWNER_ADDRESS
+# Optional fixed prices; otherwise CoinGecko is queried when a product is selected
+LTC_USD_PRICE
+ETH_USD_PRICE
+SOL_USD_PRICE
 ```
 
 The seed phrases must be dedicated hot-wallet seeds with only the funds needed for sales. Back them up securely and test each forwarding destination with a small amount before selling. The bot derives a different address index for every ticket and stores payment state in PostgreSQL.

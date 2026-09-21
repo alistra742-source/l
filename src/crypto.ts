@@ -48,6 +48,18 @@ export async function paymentState(currency: Currency, address: string) {
   return { amount, tx: `sol:${address}:${amount.toString()}` };
 }
 
+export async function quoteAmount(currency: Currency, usd: number) {
+  const envPrice = Number(process.env[`${currency}_USD_PRICE`]);
+  const ids = { LTC: 'litecoin', ETH: 'ethereum', SOL: 'solana' } as const;
+  const response = envPrice > 0 ? undefined : await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids[currency]}&vs_currencies=usd`);
+  const body = response ? await response.json() as Record<string, { usd: number }> : undefined;
+  const price = envPrice > 0 ? envPrice : Number(body?.[ids[currency]]?.usd);
+  if (!price || !Number.isFinite(price)) throw new Error(`Unable to get ${currency} USD price; set ${currency}_USD_PRICE`);
+  const decimals = currency === 'ETH' ? 18 : currency === 'LTC' ? 8 : 9;
+  const human = (usd / price).toFixed(Math.min(decimals, 8));
+  return { human, base: ethers.parseUnits(human, decimals).toString() };
+}
+
 export async function forwardFunds(currency: Currency, index: number, address: string) {
   if (currency === 'ETH') {
     const provider = new ethers.JsonRpcProvider(required('ETH_RPC_URL'));
@@ -60,6 +72,9 @@ export async function forwardFunds(currency: Currency, index: number, address: s
     return tx.hash;
   }
   if (currency === 'LTC') {
+    const seed = bip39.mnemonicToSeedSync(required('LTC_SEED_PHRASE'));
+    const node = bip32.fromSeed(seed, ltcNetwork).derivePath(`m/44'/2'/0'/0/${index}`);
+    await ltcRpc('importprivkey', [node.toWIF(), `ticket-${index}`, false]);
     return String(await ltcRpc('sendtoaddress', [required('LTC_OWNER_ADDRESS'), await ltcRpc('getreceivedbyaddress', [address, 0])]));
   }
   const connection = new Connection(required('SOL_RPC_URL'), 'confirmed');

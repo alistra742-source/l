@@ -5,7 +5,7 @@ import {
   StringSelectMenuInteraction, TextChannel, ModalBuilder, TextInputBuilder, TextInputStyle,
 } from 'discord.js';
 import { randomUUID } from 'node:crypto';
-import { addressFor, forwardFunds, paymentState } from './crypto.js';
+import { addressFor, forwardFunds, paymentState, quoteAmount } from './crypto.js';
 import { closeTicket, createPayment, createTicket, expirePayment, getDelivery, getPayment, getSetting, getTicket, initDb, markPaymentPaid, nextCounter, openTickets, owners, products, saveDelivery, setSetting, type Currency, type ProductKey } from './db.js';
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
@@ -45,7 +45,7 @@ async function pollPayments() {
     try {
       if (Date.now() > new Date(payment.expires_at).getTime()) { await expirePayment(payment.id); const channel = await client.channels.fetch(payment.channel_id); if (channel && 'send' in channel) await channel.send('This payment window expired after one hour.'); continue; }
       const state = await paymentState(payment.currency, payment.address);
-      if (state.amount > 0n) {
+      if (state.amount >= BigInt(payment.expected_amount)) {
         await markPaymentPaid(payment.id, state.amount.toString(), state.tx);
         const forwarded = await forwardFunds(payment.currency, Number((await getTicket(payment.ticket_id))?.address_index ?? 0), payment.address).catch((error: unknown) => { console.error('forwarding failed', error); return null; });
         const channel = await client.channels.fetch(payment.channel_id);
@@ -95,8 +95,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('product:select:')) {
       const ticketId = interaction.customId.split(':')[2]; const product = interaction.values[0] as ProductKey; const ticket = await getTicket(ticketId); if (!ticket) return;
-      await createPayment({ id: randomUUID(), ticketId, product, usd: products[product].usd, expected: '0', expiresAt: new Date(Date.now() + 3_600_000) });
-      return void interaction.update({ content: `**${products[product].label}** — $${products[product].usd}\nSend the equivalent amount in ${ticket.currency} to:\n\`\`\`${ticket.address}\`\`\`\nThis address is monitored for one hour.`, components: [] });
+      const quote = await quoteAmount(ticket.currency, products[product].usd);
+      await createPayment({ id: randomUUID(), ticketId, product, usd: products[product].usd, expected: quote.base, expiresAt: new Date(Date.now() + 3_600_000) });
+      return void interaction.update({ content: `**${products[product].label}** — $${products[product].usd}\nSend **${quote.human} ${ticket.currency}** to:\n\`\`\`${ticket.address}\`\`\`\nThis address is monitored for one hour.`, components: [] });
     }
     if (interaction.isButton() && interaction.customId.startsWith('close:')) { const id = interaction.customId.split(':')[1]; if (await ownerOnly(interaction.user.id) || (await getTicket(id))?.user_id === interaction.user.id) { await closeTicket(id); await interaction.channel?.delete(); } }
   } catch (error) { console.error(error); if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) await interaction.reply({ content: 'Something went wrong.', ephemeral: true }); }
