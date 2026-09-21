@@ -11,7 +11,6 @@ import { closeTicket, createPayment, createTicket, expirePayment, getDelivery, g
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 const ownerOnly = async (userId: string) => (await owners()).has(userId);
 const productOptions = Object.entries(products).map(([value, product]) => ({ label: `${product.label} — $${product.usd}`, value }));
-const currencyOptions = ['LTC', 'ETH', 'SOL'].map((value) => ({ label: value, value }));
 const commandData = [
   new SlashCommandBuilder().setName('ticketpanel').setDescription('Post the shop ticket panel'),
   new SlashCommandBuilder().setName('ownerid').setDescription('Add an owner').addStringOption((o) => o.setName('id').setDescription('Discord user ID').setRequired(true)),
@@ -25,7 +24,8 @@ const commandData = [
 
 async function panel(channel: TextChannel) {
   const name = await getSetting('shop_name') ?? '30K';
-  await channel.send({ embeds: [new EmbedBuilder().setColor(0x111827).setTitle(`${name} • Crypto Shop`).setDescription('Choose a currency to open a private payment ticket.\n\nLTC • ETH • SOL\n\nPayments are monitored for one hour.')], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId('ticket:create').setLabel('Create Ticket').setStyle(ButtonStyle.Primary))] });
+  const buttons = (['LTC', 'ETH', 'SOL'] as Currency[]).map((currency) => new ButtonBuilder().setCustomId(`ticket:create:${currency}`).setLabel(currency).setStyle(ButtonStyle.Primary));
+  await channel.send({ embeds: [new EmbedBuilder().setColor(0x111827).setTitle(`${name} • Crypto Shop`).setDescription('Press a currency to open a private payment ticket.\n\nPayments are monitored for one hour.')], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)] });
 }
 
 async function paymentButtons(ticketId: string) {
@@ -72,20 +72,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const product = interaction.commandName.replace('return', '') as ProductKey;
       if (product in products) { const text = interaction.options.getString('text'); if (text) await saveDelivery(product, text); else await setSetting('awaiting_delivery', product); return void interaction.editReply({ content: 'Waiting for message/file' }); }
     }
-    if (interaction.isButton() && interaction.customId === 'ticket:create') {
-      return void interaction.reply({ content: 'Select a payment currency.', ephemeral: true, components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(new StringSelectMenuBuilder().setCustomId('ticket:currency').setPlaceholder('Currency').addOptions(currencyOptions))] });
-    }
-    if (interaction.isStringSelectMenu() && interaction.customId === 'ticket:currency') {
-      await interaction.deferUpdate();
-      const currency = interaction.values[0] as Currency;
+    if (interaction.isButton() && interaction.customId.startsWith('ticket:create:')) {
+      await interaction.deferReply({ ephemeral: true });
+      const currency = interaction.customId.split(':')[2] as Currency;
       let index: number; let address: string;
       try { index = await nextCounter(`address_${currency}`); address = addressFor(currency, index); }
-      catch (error) { return void interaction.editReply({ content: `Cannot create a ${currency} ticket: ${error instanceof Error ? error.message : String(error)}`, components: [] }); }
+      catch (error) { return void interaction.editReply({ content: `Cannot create a ${currency} ticket: ${error instanceof Error ? error.message : String(error)}` }); }
       const guild = interaction.guild!; const category = guild.channels.cache.find((channel) => channel.type === ChannelType.GuildCategory && channel.name.toLowerCase() === 'ticketcategory');
       const channel = await guild.channels.create({ name: `${currency.toLowerCase()}-${interaction.user.username}`, type: ChannelType.GuildText, parent: category?.id, permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] }, { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] });
       const ticketId = randomUUID(); await createTicket({ id: ticketId, guildId: guild.id, channelId: channel.id, userId: interaction.user.id, currency, address, addressIndex: index });
       await channel.send({ content: `Payment ticket for **${currency}**\nAddress:\n\`\`\`${address}\`\`\`\nChoose your product below.`, components: [await paymentButtons(ticketId)] });
-      return void interaction.editReply({ content: `Ticket created: ${channel}`, components: [] });
+      return void interaction.editReply({ content: `Ticket created: ${channel}` });
     }
     if (interaction.isButton() && interaction.customId.startsWith('product:')) {
       await interaction.deferReply({ ephemeral: true });
