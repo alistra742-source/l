@@ -55,9 +55,11 @@ export async function initDb(attempts = 5) {
   )`;
   await sql`CREATE TABLE IF NOT EXISTS payments (
     id text PRIMARY KEY, ticket_id text NOT NULL REFERENCES tickets(id), product text NOT NULL,
-    usd numeric NOT NULL, expected_amount numeric, received_amount numeric DEFAULT 0,
+    usd numeric NOT NULL, expected_amount numeric, tolerance_amount numeric NOT NULL DEFAULT 0, received_amount numeric DEFAULT 0,
     tx_hash text, status text NOT NULL DEFAULT 'waiting', expires_at timestamptz NOT NULL
   )`;
+  // Keep existing databases compatible with the payment tolerance feature.
+  await sql`ALTER TABLE payments ADD COLUMN IF NOT EXISTS tolerance_amount numeric NOT NULL DEFAULT 0`;
   await sql`CREATE TABLE IF NOT EXISTS deliveries (
     product text PRIMARY KEY, content text, attachment_url text, attachment_name text, updated_at timestamptz NOT NULL DEFAULT now()
   )`;
@@ -101,12 +103,12 @@ export async function openTickets() {
 
 export async function closeTicket(id: string) { await sql`UPDATE tickets SET status = 'closed' WHERE id = ${id}`; }
 
-export async function createPayment(data: { id: string; ticketId: string; product: ProductKey; usd: number; expected: string; expiresAt: Date }) {
-  await sql`INSERT INTO payments (id, ticket_id, product, usd, expected_amount, expires_at) VALUES (${data.id}, ${data.ticketId}, ${data.product}, ${data.usd}, ${data.expected}, ${data.expiresAt.toISOString()})`;
+export async function createPayment(data: { id: string; ticketId: string; product: ProductKey; usd: number; expected: string; tolerance: string; expiresAt: Date }) {
+  await sql`INSERT INTO payments (id, ticket_id, product, usd, expected_amount, tolerance_amount, expires_at) VALUES (${data.id}, ${data.ticketId}, ${data.product}, ${data.usd}, ${data.expected}, ${data.tolerance}, ${data.expiresAt.toISOString()})`;
 }
 
 export async function pendingPayments() {
-  return await sql`SELECT p.*, t.address, t.currency, t.channel_id, t.user_id FROM payments p JOIN tickets t ON t.id = p.ticket_id WHERE p.status = 'waiting'` as Array<{ id: string; ticket_id: string; product: ProductKey; expected_amount: string; expires_at: string; address: string; currency: Currency; channel_id: string; user_id: string }>;
+  return await sql`SELECT p.*, t.address, t.currency, t.channel_id, t.user_id FROM payments p JOIN tickets t ON t.id = p.ticket_id WHERE p.status = 'waiting'` as Array<{ id: string; ticket_id: string; product: ProductKey; expected_amount: string; tolerance_amount: string; expires_at: string; address: string; currency: Currency; channel_id: string; user_id: string }>;
 }
 
 export async function markPaymentPaid(id: string, received: string, txHash: string) {

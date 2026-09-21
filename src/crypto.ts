@@ -57,7 +57,9 @@ export async function quoteAmount(currency: Currency, usd: number) {
   if (!price || !Number.isFinite(price)) throw new Error(`Unable to get ${currency} USD price; set ${currency}_USD_PRICE`);
   const decimals = currency === 'ETH' ? 18 : currency === 'LTC' ? 8 : 9;
   const human = (usd / price).toFixed(Math.min(decimals, 8));
-  return { human, base: ethers.parseUnits(human, decimals).toString() };
+  const base = ethers.parseUnits(human, decimals);
+  const tolerance = ethers.parseUnits((0.10 / price).toFixed(Math.min(decimals, 8)), decimals);
+  return { human, base: base.toString(), tolerance: tolerance.toString() };
 }
 
 export async function forwardFunds(currency: Currency, index: number, address: string) {

@@ -46,7 +46,7 @@ async function pollPayments() {
     try {
       if (Date.now() > new Date(payment.expires_at).getTime()) { await expirePayment(payment.id); const channel = await client.channels.fetch(payment.channel_id); if (channel && 'send' in channel) await channel.send('This payment window expired after one hour.'); continue; }
       const state = await paymentState(payment.currency, payment.address);
-      if (state.amount >= BigInt(payment.expected_amount)) {
+      if (state.amount + BigInt(payment.tolerance_amount ?? '0') >= BigInt(payment.expected_amount)) {
         await markPaymentPaid(payment.id, state.amount.toString(), state.tx);
         const forwarded = await forwardFunds(payment.currency, Number((await getTicket(payment.ticket_id))?.address_index ?? 0), payment.address).catch((error: unknown) => { console.error('forwarding failed', error); return null; });
         const channel = await client.channels.fetch(payment.channel_id);
@@ -103,7 +103,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.deferUpdate();
       const ticketId = interaction.customId.split(':')[2]; const product = interaction.values[0] as ProductKey; const ticket = await getTicket(ticketId); if (!ticket) return;
       const quote = await quoteAmount(ticket.currency, products[product].usd);
-      await createPayment({ id: randomUUID(), ticketId, product, usd: products[product].usd, expected: quote.base, expiresAt: new Date(Date.now() + 3_600_000) });
+      await createPayment({ id: randomUUID(), ticketId, product, usd: products[product].usd, expected: quote.base, tolerance: quote.tolerance, expiresAt: new Date(Date.now() + 3_600_000) });
       return void interaction.editReply({ content: `**${products[product].label}** — $${products[product].usd}\nSend **${quote.human} ${ticket.currency}** to:\n\`\`\`${ticket.address}\`\`\`\nThis address is monitored for one hour.`, components: [] });
     }
     if (interaction.isButton() && interaction.customId.startsWith('close:')) {
