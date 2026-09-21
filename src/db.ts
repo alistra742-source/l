@@ -1,8 +1,29 @@
 import { neon } from '@neondatabase/serverless';
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) throw new Error('DATABASE_URL is required');
-const sql = neon(databaseUrl);
+function resolveDatabaseUrl() {
+  const primary = process.env.DATABASE_URL;
+  const publicUrl = process.env.DATABASE_PUBLIC_URL;
+  const hostnameOf = (url: string) => { try { return new URL(url).hostname; } catch { return ''; } };
+  // Railway private hosts (*.railway.internal) only resolve inside the same Railway project,
+  // so prefer the public connection string whenever the private one is configured.
+  if (primary && hostnameOf(primary).endsWith('.railway.internal') && publicUrl) return { url: publicUrl, source: 'DATABASE_PUBLIC_URL' };
+  if (primary) return { url: primary, source: 'DATABASE_URL' };
+  if (publicUrl) return { url: publicUrl, source: 'DATABASE_PUBLIC_URL' };
+  throw new Error('DATABASE_URL is required: set it to a reachable PostgreSQL connection string.');
+}
+
+const database = resolveDatabaseUrl();
+const sql = neon(database.url);
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function connectionHelp(error: unknown) {
+  const host = (() => { try { return new URL(database.url).hostname; } catch { return 'unknown host'; } })();
+  const reason = error instanceof Error ? error.message : String(error);
+  const hint = host.endsWith('.railway.internal')
+    ? `A *.railway.internal address only resolves for services inside the same Railway project, and only for the actual database service (for example postgres.railway.internal). Use the Postgres service's public connection string (Railway exposes it as DATABASE_PUBLIC_URL) or a Neon connection string instead.`
+    : 'Check that the database is running and that this network can reach it.';
+  return `Could not connect to ${host} using ${database.source}: ${reason}\n${hint}`;
+}
 
 export type Currency = 'LTC' | 'ETH' | 'SOL';
 export type ProductKey = 'astra' | 'fable' | 'inf_astra' | 'script_maker';
@@ -14,7 +35,17 @@ export const products: Record<ProductKey, { label: string; usd: number }> = {
   script_maker: { label: 'AI Script Maker', usd: 15 },
 };
 
-export async function initDb() {
+export async function initDb(attempts = 5) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await sql`SELECT 1`;
+      break;
+    } catch (error) {
+      if (attempt >= attempts) throw new Error(connectionHelp(error));
+      console.error(`Database not reachable (attempt ${attempt}/${attempts}); retrying in 3s.`);
+      await sleep(3_000);
+    }
+  }
   await sql`CREATE TABLE IF NOT EXISTS settings (key text PRIMARY KEY, value text NOT NULL)`;
   await sql`CREATE TABLE IF NOT EXISTS counters (name text PRIMARY KEY, value integer NOT NULL DEFAULT 0)`;
   await sql`CREATE TABLE IF NOT EXISTS tickets (

@@ -51,7 +51,7 @@ export async function paymentState(currency: Currency, address: string) {
 export async function quoteAmount(currency: Currency, usd: number) {
   const envPrice = Number(process.env[`${currency}_USD_PRICE`]);
   const ids = { LTC: 'litecoin', ETH: 'ethereum', SOL: 'solana' } as const;
-  const response = envPrice > 0 ? undefined : await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids[currency]}&vs_currencies=usd`);
+  const response = envPrice > 0 ? undefined : await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids[currency]}&vs_currencies=usd`, { signal: AbortSignal.timeout(8_000) });
   const body = response ? await response.json() as Record<string, { usd: number }> : undefined;
   const price = envPrice > 0 ? envPrice : Number(body?.[ids[currency]]?.usd);
   if (!price || !Number.isFinite(price)) throw new Error(`Unable to get ${currency} USD price; set ${currency}_USD_PRICE`);
