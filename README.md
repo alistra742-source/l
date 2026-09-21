@@ -11,9 +11,9 @@ Railway-ready TypeScript Discord bot for private crypto payment tickets and digi
 BOT_TOKEN
 APPLICATION_ID
 OWNER_ID=1526647973986046034
-ETH_SEED_PHRASE
-LTC_SEED_PHRASE
-SOL_SEED_PHRASE
+ETH
+LTC
+SOL
 ETH_RPC_URL
 LTC_RPC_URL
 SOL_RPC_URL
@@ -26,7 +26,7 @@ ETH_USD_PRICE
 SOL_USD_PRICE
 ```
 
-The seed phrases must be dedicated hot-wallet seeds with only the funds needed for sales. Back them up securely and test each forwarding destination with a small amount before selling. The bot derives a different address index for every ticket and stores payment state in a local JSON file (`data/shop.json`, override with `DATA_FILE`) instead of an external database. Back up that file and mount a persistent volume for it if you host the bot in a container.
+`ETH`, `LTC` and `SOL` are the wallet seed phrases (the older `ETH_SEED_PHRASE`, `LTC_SEED_PHRASE` and `SOL_SEED_PHRASE` names are still accepted). They must be dedicated hot-wallet seeds with only the funds needed for sales. Back them up securely and test each forwarding destination with a small amount before selling. The bot derives a different address index for every ticket and stores payment state in a local JSON file (`data/shop.json`, override with `DATA_FILE`) instead of an external database. Back up that file and mount a persistent volume for it if you host the bot in a container.
 
 ## Commands
 

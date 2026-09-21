@@ -10,18 +10,24 @@ import type { Currency } from './db.js';
 const bip32 = BIP32Factory(ecc);
 const ltcNetwork = { messagePrefix: '\x19Litecoin Signed Message:\n', bech32: 'ltc', bip32: { public: 0x019da462, private: 0x019d9cfe }, pubKeyHash: 0x30, scriptHash: 0x32, wif: 0xb0 };
 const required = (key: string) => { const value = process.env[key]; if (!value) throw new Error(`${key} is required`); return value; };
+// Wallet seeds are configured as ETH, LTC and SOL (the older *_SEED_PHRASE names still work).
+function seedPhrase(currency: Currency) {
+  const value = process.env[currency] || process.env[`${currency}_SEED_PHRASE`];
+  if (!value) throw new Error(`${currency} is required (or legacy ${currency}_SEED_PHRASE)`);
+  return value;
+}
 
 export function addressFor(currency: Currency, index: number) {
   if (currency === 'ETH') {
-    const wallet = ethers.HDNodeWallet.fromPhrase(required('ETH_SEED_PHRASE'), undefined, `m/44'/60'/0'/0/${index}`);
+    const wallet = ethers.HDNodeWallet.fromPhrase(seedPhrase('ETH'), undefined, `m/44'/60'/0'/0/${index}`);
     return wallet.address;
   }
   if (currency === 'LTC') {
-    const seed = bip39.mnemonicToSeedSync(required('LTC_SEED_PHRASE'));
+    const seed = bip39.mnemonicToSeedSync(seedPhrase('LTC'));
     const node = bip32.fromSeed(seed, ltcNetwork).derivePath(`m/44'/2'/0'/0/${index}`);
     return bitcoin.payments.p2pkh({ pubkey: Buffer.from(node.publicKey), network: ltcNetwork }).address!;
   }
-  const seed = bip39.mnemonicToSeedSync(required('SOL_SEED_PHRASE'));
+  const seed = bip39.mnemonicToSeedSync(seedPhrase('SOL'));
   const derived = derivePath(`m/44'/501'/${index}'/0'`, seed.toString('hex')).key;
   return Keypair.fromSeed(Uint8Array.from(derived)).publicKey.toBase58();
 }
@@ -65,7 +71,7 @@ export async function quoteAmount(currency: Currency, usd: number) {
 export async function forwardFunds(currency: Currency, index: number, address: string) {
   if (currency === 'ETH') {
     const provider = new ethers.JsonRpcProvider(required('ETH_RPC_URL'));
-    const wallet = ethers.HDNodeWallet.fromPhrase(required('ETH_SEED_PHRASE'), undefined, `m/44'/60'/0'/0/${index}`).connect(provider);
+    const wallet = ethers.HDNodeWallet.fromPhrase(seedPhrase('ETH'), undefined, `m/44'/60'/0'/0/${index}`).connect(provider);
     const balance = await provider.getBalance(address);
     const fee = (await provider.getFeeData()).maxFeePerGas ?? (await provider.getFeeData()).gasPrice ?? 0n;
     const gas = fee * 21_000n;
@@ -74,13 +80,13 @@ export async function forwardFunds(currency: Currency, index: number, address: s
     return tx.hash;
   }
   if (currency === 'LTC') {
-    const seed = bip39.mnemonicToSeedSync(required('LTC_SEED_PHRASE'));
+    const seed = bip39.mnemonicToSeedSync(seedPhrase('LTC'));
     const node = bip32.fromSeed(seed, ltcNetwork).derivePath(`m/44'/2'/0'/0/${index}`);
     await ltcRpc('importprivkey', [node.toWIF(), `ticket-${index}`, false]);
     return String(await ltcRpc('sendtoaddress', [required('LTC_OWNER_ADDRESS'), await ltcRpc('getreceivedbyaddress', [address, 0])]));
   }
   const connection = new Connection(required('SOL_RPC_URL'), 'confirmed');
-  const seed = bip39.mnemonicToSeedSync(required('SOL_SEED_PHRASE'));
+  const seed = bip39.mnemonicToSeedSync(seedPhrase('SOL'));
   const derived = derivePath(`m/44'/501'/${index}'/0'`, seed.toString('hex')).key;
   const signer = Keypair.fromSeed(Uint8Array.from(derived));
   const balance = await connection.getBalance(signer.publicKey);
