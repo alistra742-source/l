@@ -136,7 +136,7 @@ await rest.put(Routes.applicationCommands(applicationId), { body: commandData })
 try {
   await initDb();
 } catch (error) {
-  console.error('Database setup failed, so the bot cannot start.');
+  console.error('Local data file could not be prepared, so the bot cannot start.');
   console.error(error instanceof Error ? error.message : error);
   process.exit(1);
 }
