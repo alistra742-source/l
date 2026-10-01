@@ -1,134 +1,161 @@
-import 'dotenv/config';
+import "dotenv/config";
+
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, Client, EmbedBuilder, Events,
-  GatewayIntentBits, PermissionFlagsBits, REST, Routes, SlashCommandBuilder, StringSelectMenuBuilder,
-  TextChannel,
-} from 'discord.js';
-import { randomUUID } from 'node:crypto';
-import { addressFor, forwardFunds, paymentState, quoteAmount } from './crypto.js';
-import { closeTicket, createPayment, createTicket, expirePayment, getDelivery, getPayment, getSetting, getTicket, initDb, markPaymentPaid, nextCounter, openTickets, owners, pendingPayments, products, saveDelivery, setSetting, type Currency, type ProductKey } from './db.js';
+  Client,
+  Events,
+  GatewayIntentBits,
+  MessageFlags,
+  REST,
+  Routes,
+  type Interaction,
+  type RepliableInteraction,
+} from "discord.js";
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
-const ownerOnly = async (userId: string) => (await owners()).has(userId);
-const productOptions = Object.entries(products).map(([value, product]) => ({ label: `${product.label} — $${product.usd}`, value }));
-const commandData = [
-  new SlashCommandBuilder().setName('ticketpanel').setDescription('Post the shop ticket panel'),
-  new SlashCommandBuilder().setName('ownerid').setDescription('Add an owner').addStringOption((o) => o.setName('id').setDescription('Discord user ID').setRequired(true)),
-  new SlashCommandBuilder().setName('shoprename').setDescription('Rename the shop').addStringOption((o) => o.setName('name').setDescription('New name').setRequired(true)),
-  new SlashCommandBuilder().setName('ethaddy').setDescription('Set the ETH forwarding address').addStringOption((o) => o.setName('address').setDescription('Address').setRequired(true)),
-  new SlashCommandBuilder().setName('ltcaddy').setDescription('Set the LTC forwarding address').addStringOption((o) => o.setName('address').setDescription('Address').setRequired(true)),
-  new SlashCommandBuilder().setName('soladdy').setDescription('Set the SOL forwarding address').addStringOption((o) => o.setName('address').setDescription('Address').setRequired(true)),
-  ...(['fable', 'astra', 'inf_astra', 'script_maker'] as ProductKey[]).map((product) => new SlashCommandBuilder().setName(`${product}return`).setDescription('Store a product delivery').addStringOption((o) => o.setName('text').setDescription('Delivery text').setRequired(false))),
-  new SlashCommandBuilder().setName('sale').setDescription('Remove a user from this server').addUserOption((o) => o.setName('user').setDescription('User').setRequired(true)),
-].map((command) => command.toJSON());
+import { commandData } from "./commands.js";
+import { handleAutoRole, handleBan, handleDmAll, handleSay } from "./admin.js";
+import { handleAutomod } from "./automod.js";
+import { isOwner } from "./owner.js";
+import { getAutoroleId } from "./store.js";
+import {
+  TICKET_BUTTON_ID,
+  TICKET_CLOSE_ID,
+  TICKET_MODAL_ID,
+  handleTicketButton,
+  handleTicketClose,
+  handleTicketModal,
+  postTicketPanel,
+  setTicketCategory,
+} from "./tickets.js";
 
-async function panel(channel: TextChannel) {
-  const name = await getSetting('shop_name') ?? '30K';
-  const buttons = (['LTC', 'ETH', 'SOL'] as Currency[]).map((currency) => new ButtonBuilder().setCustomId(`ticket:create:${currency}`).setLabel(currency).setStyle(ButtonStyle.Primary));
-  await channel.send({ embeds: [new EmbedBuilder().setColor(0x111827).setTitle(`${name} • Crypto Shop`).setDescription('Press a currency to open a private payment ticket.\n\nPayments are monitored for one hour.')], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)] });
+const token = process.env.BOT_TOKEN?.trim();
+if (!token) {
+  console.error("BOT_TOKEN is missing. Add it to the Railway variables and restart.");
+  process.exit(1);
 }
 
-async function paymentButtons(ticketId: string) {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`product:${ticketId}`).setLabel('Choose product').setStyle(ButtonStyle.Primary), new ButtonBuilder().setCustomId(`close:${ticketId}`).setLabel('Close').setStyle(ButtonStyle.Secondary));
-}
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
 
-async function pollPayments() {
-  const pending = await pendingPayments().catch((error: unknown) => { console.error('payment poll failed', error); return []; });
-  for (const payment of pending) {
-    try {
-      if (Date.now() > new Date(payment.expires_at).getTime()) { await expirePayment(payment.id); const channel = await client.channels.fetch(payment.channel_id); if (channel && 'send' in channel) await channel.send('This payment window expired after one hour.'); continue; }
-      const state = await paymentState(payment.currency, payment.address);
-      if (state.amount + BigInt(payment.tolerance_amount ?? '0') >= BigInt(payment.expected_amount)) {
-        await markPaymentPaid(payment.id, state.amount.toString(), state.tx);
-        const forwarded = await forwardFunds(payment.currency, Number((await getTicket(payment.ticket_id))?.address_index ?? 0), payment.address).catch((error: unknown) => { console.error('forwarding failed', error); return null; });
-        const channel = await client.channels.fetch(payment.channel_id);
-        if (channel && 'send' in channel) await channel.send(`Payment confirmed. Funds forwarded to the owner${forwarded ? ` (${forwarded})` : ''}.`);
-        const delivery = await getDelivery(payment.product);
-        const user = await client.users.fetch(payment.user_id);
-        if (delivery?.attachment_url) await user.send({ content: 'Your order is ready.', files: [{ attachment: delivery.attachment_url, name: delivery.attachment_name ?? 'delivery.bin' }] });
-        else if (delivery?.content) await user.send(`Your order is ready:\n${delivery.content}`);
-        else await user.send('Payment confirmed. Your delivery has not been uploaded yet; the owner will provide it shortly.');
-      }
-    } catch (error) { console.error('payment poll failed', error); }
+async function registerCommands(): Promise<void> {
+  const rest = new REST({ version: "10" }).setToken(token!);
+  const applicationId = client.user?.id;
+  if (!applicationId) throw new Error("Client user is not ready yet.");
+
+  const guildId = process.env.GUILD_ID?.trim();
+  if (guildId) {
+    await rest.put(Routes.applicationGuildCommands(applicationId, guildId), { body: commandData });
+    console.log(`Registered ${commandData.length} commands in guild ${guildId} (instant).`);
+  } else {
+    await rest.put(Routes.applicationCommands(applicationId), { body: commandData });
+    console.log(
+      `Registered ${commandData.length} global commands. They can take up to an hour to appear.`,
+    );
   }
 }
 
-client.on(Events.Error, (error) => console.error('Discord client error', error));
-client.once(Events.ClientReady, (ready) => { console.log(`Logged in as ${ready.user.tag}`); setInterval(() => void pollPayments(), 30_000); });
+async function replyFailure(interaction: Interaction): Promise<void> {
+  if (!interaction.isRepliable()) return;
+  try {
+    const payload = {
+      content: "Something went wrong handling that. Check the bot logs.",
+      flags: MessageFlags.Ephemeral as const,
+    };
+    const repliable = interaction as RepliableInteraction;
+    if (repliable.deferred || repliable.replied) await repliable.followUp(payload);
+    else await repliable.reply(payload);
+  } catch {
+    /* nothing else we can do */
+  }
+}
+
+async function routeCommand(interaction: Interaction): Promise<void> {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (!isOwner(interaction.user.id)) {
+    await interaction.reply({
+      content: "You are not authorized to use this command.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  switch (interaction.commandName) {
+    case "say":
+      return handleSay(interaction);
+    case "ticketpurchase":
+      return postTicketPanel(interaction);
+    case "ticketpurchasecategory":
+      return setTicketCategory(interaction);
+    case "ban":
+      return handleBan(interaction);
+    case "dmall":
+      return handleDmAll(interaction);
+    case "autorole":
+      return handleAutoRole(interaction);
+    default:
+      await interaction.reply({ content: "Unknown command.", flags: MessageFlags.Ephemeral });
+  }
+}
+
+client.once(Events.ClientReady, async (readyClient) => {
+  console.log(`Logged in as ${readyClient.user.tag}`);
+  try {
+    await registerCommands();
+  } catch (err) {
+    console.error("[commands] registration failed:", err);
+  }
+});
+
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) {
-      // Acknowledge immediately: the database round trip below can exceed Discord's 3 second window.
-      await interaction.deferReply({ ephemeral: true });
-      if (interaction.commandName === 'sale') {
-        if (!(await ownerOnly(interaction.user.id))) return void interaction.editReply({ content: 'Not authorized.' });
-        const user = interaction.options.getUser('user', true); const member = await interaction.guild?.members.fetch(user.id); if (member) await member.kick('Sale'); return void interaction.editReply({ content: 'Done.' });
-      }
-      if (!(await ownerOnly(interaction.user.id))) return void interaction.editReply({ content: 'Not authorized.' });
-      if (interaction.commandName === 'ticketpanel') { await panel(interaction.channel as TextChannel); return void interaction.editReply({ content: 'Done.' }); }
-      if (interaction.commandName === 'ownerid') { const id = interaction.options.getString('id', true); const current = await owners(); current.add(id); await setSetting('owners', [...current].join(',')); return void interaction.editReply({ content: 'Done.' }); }
-      if (interaction.commandName === 'shoprename') { await setSetting('shop_name', interaction.options.getString('name', true)); return void interaction.editReply({ content: 'Done.' }); }
-      if (['ethaddy', 'ltcaddy', 'soladdy'].includes(interaction.commandName)) { await setSetting(`${interaction.commandName}_address`, interaction.options.getString('address', true)); return void interaction.editReply({ content: 'Done.' }); }
-      const product = interaction.commandName.replace('return', '') as ProductKey;
-      if (product in products) { const text = interaction.options.getString('text'); if (text) await saveDelivery(product, text); else await setSetting('awaiting_delivery', product); return void interaction.editReply({ content: 'Waiting for message/file' }); }
+      await routeCommand(interaction);
+      return;
     }
-    if (interaction.isButton() && interaction.customId.startsWith('ticket:create:')) {
-      await interaction.deferReply({ ephemeral: true });
-      const currency = interaction.customId.split(':')[2] as Currency;
-      let index: number; let address: string;
-      try { index = await nextCounter(`address_${currency}`); address = addressFor(currency, index); }
-      catch (error) { return void interaction.editReply({ content: `Cannot create a ${currency} ticket: ${error instanceof Error ? error.message : String(error)}` }); }
-      const guild = interaction.guild!; const category = guild.channels.cache.find((channel) => channel.type === ChannelType.GuildCategory && channel.name.toLowerCase() === 'ticketcategory');
-      const channel = await guild.channels.create({ name: `${currency.toLowerCase()}-${interaction.user.username}`, type: ChannelType.GuildText, parent: category?.id, permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] }, { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] });
-      const ticketId = randomUUID(); await createTicket({ id: ticketId, guildId: guild.id, channelId: channel.id, userId: interaction.user.id, currency, address, addressIndex: index });
-      await channel.send({ content: `Payment ticket for **${currency}**\nAddress:\n\`\`\`${address}\`\`\`\nChoose your product below.`, components: [await paymentButtons(ticketId)] });
-      return void interaction.editReply({ content: `Ticket created: ${channel}` });
+    if (interaction.isButton()) {
+      if (interaction.customId === TICKET_BUTTON_ID) await handleTicketButton(interaction);
+      else if (interaction.customId === TICKET_CLOSE_ID) await handleTicketClose(interaction);
+      return;
     }
-    if (interaction.isButton() && interaction.customId.startsWith('product:')) {
-      await interaction.deferReply({ ephemeral: true });
-      const ticketId = interaction.customId.split(':')[1]; const ticket = await getTicket(ticketId); if (!ticket || ticket.user_id !== interaction.user.id) return void interaction.editReply({ content: 'Not authorized.' });
-      return void interaction.editReply({ content: 'Choose a product.', components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(new StringSelectMenuBuilder().setCustomId(`product:select:${ticketId}`).setPlaceholder('Product').addOptions(productOptions))] });
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId === TICKET_MODAL_ID) await handleTicketModal(interaction);
     }
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('product:select:')) {
-      await interaction.deferUpdate();
-      const ticketId = interaction.customId.split(':')[2]; const product = interaction.values[0] as ProductKey; const ticket = await getTicket(ticketId); if (!ticket) return;
-      const quote = await quoteAmount(ticket.currency, products[product].usd);
-      await createPayment({ id: randomUUID(), ticketId, product, usd: products[product].usd, expected: quote.base, tolerance: quote.tolerance, expiresAt: new Date(Date.now() + 3_600_000) });
-      return void interaction.editReply({ content: `**${products[product].label}** — $${products[product].usd}\nSend **${quote.human} ${ticket.currency}** to:\n\`\`\`${ticket.address}\`\`\`\nThis address is monitored for one hour.`, components: [] });
-    }
-    if (interaction.isButton() && interaction.customId.startsWith('close:')) {
-      const id = interaction.customId.split(':')[1]; const allowed = (await ownerOnly(interaction.user.id)) || (await getTicket(id))?.user_id === interaction.user.id;
-      if (!allowed) return void interaction.reply({ content: 'Not authorized.', ephemeral: true });
-      await interaction.deferUpdate(); await closeTicket(id); await interaction.channel?.delete().catch(() => {});
-    }
-  } catch (error) {
-    console.error(error);
-    if (!interaction.isRepliable()) return;
-    const content = `Something went wrong: ${error instanceof Error ? error.message : String(error)}`;
-    if (interaction.replied || interaction.deferred) await interaction.followUp({ content, ephemeral: true }).catch(() => {});
-    else await interaction.reply({ content, ephemeral: true }).catch(() => {});
+  } catch (err) {
+    console.error("[interaction] unhandled error:", err);
+    await replyFailure(interaction);
   }
 });
 
-client.on(Events.MessageCreate, async (message) => {
+client.on(Events.GuildMemberAdd, async (member) => {
+  if (member.user.bot) return;
+  const roleId = getAutoroleId(member.guild.id);
+  if (!roleId) return;
+
+  const role = member.guild.roles.cache.get(roleId);
+  if (!role) return;
+
   try {
-    if (message.author.bot || !(await ownerOnly(message.author.id))) return;
-    const product = (await getSetting('awaiting_delivery')) as ProductKey | undefined; if (!product) return;
-    const attachment = message.attachments.first(); await saveDelivery(product, attachment ? undefined : message.content, attachment?.url, attachment?.name); await setSetting('awaiting_delivery', '');
-  } catch (error) { console.error('delivery message failed', error); }
+    await member.roles.add(role, "Autorole");
+  } catch (err) {
+    console.warn(`[autorole] could not add role to ${member.user.tag}:`, err);
+  }
 });
 
-const token = process.env.BOT_TOKEN;
-if (!token) throw new Error('BOT_TOKEN is required');
-const rest = new REST({ version: '10' }).setToken(token);
-const applicationId = process.env.APPLICATION_ID;
-if (!applicationId) throw new Error('APPLICATION_ID is required');
-await rest.put(Routes.applicationCommands(applicationId), { body: commandData });
-try {
-  await initDb();
-} catch (error) {
-  console.error('Local data file could not be prepared, so the bot cannot start.');
-  console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
-}
+client.on(Events.MessageCreate, (message) => {
+  void handleAutomod(message);
+});
+
+client.on(Events.MessageUpdate, (_oldMessage, newMessage) => {
+  void handleAutomod(newMessage);
+});
+
+process.on("unhandledRejection", (err) => console.error("[unhandledRejection]", err));
+process.on("uncaughtException", (err) => console.error("[uncaughtException]", err));
+
 await client.login(token);

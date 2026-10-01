@@ -1,45 +1,98 @@
-# 30K Discord Shop Bot
+# Alistra Discord Bot
 
-Railway-ready TypeScript Discord bot for private crypto payment tickets and digital delivery.
+A Railway-ready Discord bot with owner-only admin tools, a purchase ticket system, autorole,
+mass DM, user wipe/ban, and automatic promotion/link removal.
+
+Everything is gated behind the owner ID, so only `1526647973986046034` can run the commands
+(change it with the `OWNER_ID` variable).
 
 ## Setup
 
-1. Create a Discord application, add a bot, and copy the bot token and application ID. Enable **Message Content Intent**.
-3. Add these variables in Railway (never commit seed phrases):
+1. Go to <https://discord.com/developers/applications> → **New Application** → **Bot**.
+2. Copy the bot **token** and reset it if it was ever shared.
+3. On the **Bot** page, enable BOTH privileged intents:
+   - **SERVER MEMBERS INTENT** (autorole on join, `/dmall`, `/ban`)
+   - **MESSAGE CONTENT INTENT** (promotion detection)
+4. Invite the bot with the link below, choosing **Administrator** on the invite screen
+   (simplest — it needs to purge messages in every channel, manage roles and create channels):
 
-```text
-BOT_TOKEN
-APPLICATION_ID
-OWNER_ID=1526647973986046034
-ETH
-LTC
-SOL
-ETH_RPC_URL
-LTC_RPC_URL
-SOL_RPC_URL
-ETH_OWNER_ADDRESS
-LTC_OWNER_ADDRESS
-SOL_OWNER_ADDRESS
-# Optional fixed prices; otherwise CoinGecko is queried when a product is selected
-LTC_USD_PRICE
-ETH_USD_PRICE
-SOL_USD_PRICE
-```
+   ```
+   https://discord.com/api/oauth2/authorize?client_id=YOUR_APP_ID&permissions=8&scope=bot%20applications.commands
+   ```
 
-`ETH`, `LTC` and `SOL` are the wallet seed phrases (the older `ETH_SEED_PHRASE`, `LTC_SEED_PHRASE` and `SOL_SEED_PHRASE` names are still accepted). They must be dedicated hot-wallet seeds with only the funds needed for sales. Back them up securely and test each forwarding destination with a small amount before selling. The bot derives a different address index for every ticket and stores payment state in a local JSON file (`data/shop.json`, override with `DATA_FILE`) instead of an external database. Back up that file and mount a persistent volume for it if you host the bot in a container.
+   Prefer a smaller permission set? Use this instead:
 
-## Commands
+   ```
+   https://discord.com/api/oauth2/authorize?client_id=YOUR_APP_ID&permissions=120527645716&scope=bot%20applications.commands
+   ```
 
-The initial owner is `1526647973986046034`. Owners can add more owners with `/ownerid`. Other owner-only commands are `/ticketpanel`, `/shoprename`, `/ethaddy`, `/ltcaddy`, `/soladdy`, `/fable_return`, `/astra_return`, `/inf_astra_return`, `/script_maker_return`, and `/sale`.
+   (that is View Channels, Send Messages, Manage Messages, Embed Links, Attach Files,
+   Read Message History, Manage Channels, Manage Roles, Ban Members and thread permissions.)
 
-`/ticketpanel` posts the custom 30K panel. Buyers select LTC, ETH, or SOL, then a product. LTC and ETH use the derived wallet addresses; SOL uses the derived Solana addresses. Payments are checked every 30 seconds and expire after one hour. A confirmed payment is forwarded to the configured owner address before delivery is sent.
+## Railway variables
 
-For a delivery, run the matching return command with text, or run it without text and then send the file/text as the owner. The bot stores the delivery in its local data file and sends it to future confirmed buyers. Buyers may underpay by up to $0.10 and still be confirmed.
+| Variable | Required | What it does |
+| --- | --- | --- |
+| `BOT_TOKEN` | yes | Your bot token. |
+| `OWNER_ID` | no | Who may use the admin commands. Defaults to `1526647973986046034`. |
+| `GUILD_ID` | no | Put your server ID here so slash commands appear **instantly**. Without it commands are global and can take up to an hour to show up. |
+| `TICKET_CATEGORY_ID` | no | Default category for purchase tickets (same as running `/ticketpurchasecategory`). |
+| `AUTOROLE_ID` | no | Default autorole (same as running `/autorole`). |
+| `AUTOMOD_LOG_CHANNEL_ID` | no | Channel that receives a log embed for every deleted promotion message. |
+| `DATA_FILE` | no | Where the small settings file lives. Defaults to `data/config.json`. |
 
-## Run
+Then in Railway: **Deploy**. Start command is `npm start`.
+
+> Ticket category and autorole are remembered in a small JSON file. On Railway the filesystem
+> is wiped on every deploy, so either attach a **Volume** and point `DATA_FILE` at it, or set
+> `TICKET_CATEGORY_ID` / `AUTOROLE_ID` as variables.
+
+## Commands (owner only)
+
+| Command | What it does |
+| --- | --- |
+| `/say message:<text>` | Posts the message in the channel as the bot. **Only you see the confirmation**; everyone sees the posted message. |
+| `/ticketpurchase message:<text>` | Posts a ticket panel with your text and a **Purchase** button. |
+| `/ticketpurchasecategory category:<category>` | Sets the category where purchase tickets are created. |
+| `/ban user:<user>` or `userid:<id>` | Deletes every message the user ever sent across the server (including threads), then bans them. |
+| `/dmall message:<text>` | DMs every human member of the server. |
+| `/autorole role:<role>` | Gives the role to everyone now and to every future member. |
+
+Anyone who is not the owner gets **"You are not authorized to use this command."**
+
+## Ticket flow
+
+1. Owner runs `/ticketpurchase message:Prices and info here`.
+2. A panel appears with a **Purchase** button (anyone can press it).
+3. Pressing it opens a modal with three questions:
+   - What are you buying?
+   - Which payment method are you using?
+   - Do you agree to our rules?
+4. A private ticket channel is created in the configured category, visible only to the buyer,
+   the owner and the bot. It contains the answers and a **Close Ticket** button
+   (usable by the buyer or staff).
+
+## Promotion detection
+
+Every message is checked for Discord invites, links, bare domains (`something.com`) and promo
+phrases (`free nitro`, `promo code`, `sub4sub`, `advertising my …`, …). Matching messages are
+**deleted**. The bot owner and staff with Manage Messages / Administrator are never touched.
+Add or adjust patterns in `src/automod.ts`.
+
+## Run locally
 
 ```bash
-bun install
-bun run typecheck
-bun run start
+cp .env.example .env   # then fill in BOT_TOKEN
+npm install
+npm run typecheck
+npm start
 ```
+
+## Files
+
+- `src/index.ts` — client, command registration, event routing.
+- `src/commands.ts` — slash command definitions.
+- `src/admin.ts` — `/say`, `/ban`, `/dmall`, `/autorole`.
+- `src/tickets.ts` — purchase panel, modal, ticket creation and closing.
+- `src/automod.ts` — promotion/link detection.
+- `src/store.ts` — small per-server settings file.
